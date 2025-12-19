@@ -1,0 +1,253 @@
+<script>
+    // ✅ YOUR FIREBASE CONFIG
+    const firebaseConfig = {
+        apiKey: "AIzaSyA3eAQ8DPvf2-xffDg60rTTw_0vlodPSaY",
+        authDomain: "revision-oasis.firebaseapp.com",
+        projectId: "revision-oasis",
+        storageBucket: "revision-oasis.firebasestorage.app",
+        messagingSenderId: "176222224234",
+        appId: "1:176222224234:web:d22c238febb597cc00af13"
+    };
+
+    // Initialize Firebase
+    const app = firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    console.log("Firebase connected!");
+
+    // ======================
+    // 1. LOAD SUBJECTS FROM FIRESTORE
+    // ======================
+    function loadSubjects() {
+        const subjectsList = document.getElementById('subjectsList');
+        subjectsList.innerHTML = '<p style="color:var(--text-muted); text-align:center;">Loading subjects...</p>';
+        
+        db.collection('subjects').get()
+            .then((querySnapshot) => {
+                subjectsList.innerHTML = '';
+                
+                if (querySnapshot.empty) {
+                    subjectsList.innerHTML = '<p style="color:var(--text-muted); text-align:center;">No subjects added yet. Add your first subject below!</p>';
+                    return;
+                }
+                
+                querySnapshot.forEach((doc) => {
+                    const subject = doc.data();
+                    const subjectId = doc.id;
+                    
+                    const progressPercent = subject.totalChapters > 0 
+                        ? Math.round((subject.completedChapters / subject.totalChapters) * 100)
+                        : 0;
+                    
+                    const subjectDiv = document.createElement('div');
+                    subjectDiv.className = 'subject-item';
+                    subjectDiv.id = `subject-${subjectId}`;
+                    subjectDiv.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h3>${subject.name} <span class="chip ${subject.priority}">${subject.priority}</span></h3>
+                            <span style="color:var(--accent); font-weight:bold;">${progressPercent}%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:${progressPercent}%"></div>
+                        </div>
+                        <div class="stats">
+                            <span>Chapters: ${subject.completedChapters || 0}/${subject.totalChapters || 0}</span>
+                            <span>Daily: ${subject.dailyHours || 0} hrs</span>
+                        </div>
+                        <button onclick="deleteSubject('${subjectId}')" style="background:var(--danger); padding:8px 15px; margin-top:10px; font-size:0.9rem;">
+                            <i class="fas fa-trash"></i> Delete
+                        </button>
+                    `;
+                    subjectsList.appendChild(subjectDiv);
+                });
+            })
+            .catch((error) => {
+                console.error("Error loading subjects: ", error);
+                subjectsList.innerHTML = '<p style="color:var(--danger);">Error loading subjects. Check console.</p>';
+            });
+    }
+
+    // ======================
+    // 2. ADD NEW SUBJECT TO FIRESTORE
+    // ======================
+    document.getElementById('addSubject').addEventListener('click', function() {
+        const name = document.getElementById('subjectName').value.trim();
+        const priority = document.getElementById('subjectPriority').value;
+        
+        if (!name) {
+            alert('Please enter a subject name.');
+            return;
+        }
+        
+        const newSubject = {
+            name: name,
+            priority: priority,
+            totalChapters: 0,
+            completedChapters: 0,
+            allocatedDays: 0,
+            dailyHours: 0,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        
+        db.collection('subjects').add(newSubject)
+            .then((docRef) => {
+                console.log("Subject added with ID: ", docRef.id);
+                document.getElementById('subjectName').value = '';
+                loadSubjects(); // Refresh the list
+            })
+            .catch((error) => {
+                console.error("Error adding subject: ", error);
+                alert('Error adding subject. Check console.');
+            });
+    });
+
+    // ======================
+    // 3. DELETE SUBJECT
+    // ======================
+    function deleteSubject(subjectId) {
+        if (confirm('Are you sure you want to delete this subject?')) {
+            db.collection('subjects').doc(subjectId).delete()
+                .then(() => {
+                    console.log("Subject deleted");
+                    loadSubjects(); // Refresh the list
+                })
+                .catch((error) => {
+                    console.error("Error deleting subject: ", error);
+                    alert('Error deleting subject.');
+                });
+        }
+    }
+
+    // ======================
+    // 4. SMART PLANNER CALCULATION
+    // ======================
+    document.getElementById('calculatePlan').addEventListener('click', async function() {
+        const examDate = document.getElementById('examDate').value;
+        const dailyHours = parseInt(document.getElementById('dailyHours').value);
+        
+        if (!examDate || !dailyHours) {
+            alert('Please fill both fields.');
+            return;
+        }
+        
+        // Calculate days left
+        const exam = new Date(examDate);
+        const today = new Date();
+        const daysLeft = Math.ceil((exam - today) / (1000 * 60 * 60 * 24));
+        
+        if (daysLeft <= 0) {
+            alert('Exam date must be in the future.');
+            return;
+        }
+        
+        // Get all subjects
+        const subjectsSnapshot = await db.collection('subjects').get();
+        if (subjectsSnapshot.empty) {
+            alert('Add subjects first to calculate plan.');
+            return;
+        }
+        
+        const subjects = [];
+        let totalWeight = 0;
+        
+        subjectsSnapshot.forEach((doc) => {
+            const subject = doc.data();
+            subject.id = doc.id;
+            
+            // Assign weight based on priority
+            let weight = 1;
+            if (subject.priority === 'high') weight = 3;
+            else if (subject.priority === 'medium') weight = 2;
+            
+            subject.weight = weight;
+            totalWeight += weight;
+            subjects.push(subject);
+        });
+        
+        // Calculate days and hours per subject
+        let planHTML = `
+            <p><strong>Exam Date:</strong> ${examDate}</p>
+            <p><strong>Days Left:</strong> ${daysLeft}</p>
+            <p><strong>Daily Study Hours:</strong> ${dailyHours}</p>
+            <hr style="margin:15px 0; border-color:rgba(255,255,255,0.1);">
+        `;
+        
+        subjects.forEach((subject) => {
+            // Allocate days proportionally
+            const allocatedDays = Math.round((subject.weight / totalWeight) * daysLeft);
+            const dailyHoursForSubject = ((allocatedDays * dailyHours) / daysLeft).toFixed(1);
+            
+            planHTML += `
+                <div style="margin:10px 0; padding:10px; background:rgba(138,43,226,0.1); border-radius:10px;">
+                    <strong>${subject.name}</strong> (${subject.priority})
+                    <div style="display:flex; justify-content:space-between; margin-top:5px;">
+                        <span>📅 ${allocatedDays} days</span>
+                        <span>⏰ ${dailyHoursForSubject} hrs/day</span>
+                    </div>
+                </div>
+            `;
+            
+            // Update subject in Firestore
+            db.collection('subjects').doc(subject.id).update({
+                allocatedDays: allocatedDays,
+                dailyHours: parseFloat(dailyHoursForSubject)
+            });
+        });
+        
+        // Save plan to Firestore
+        await db.collection('planner').doc('currentPlan').set({
+            examDate: examDate,
+            dailyStudyHours: dailyHours,
+            daysLeft: daysLeft,
+            generatedOn: firebase.firestore.FieldValue.serverTimestamp(),
+            subjectsAllocation: subjects.map(s => ({
+                name: s.name,
+                days: Math.round((s.weight / totalWeight) * daysLeft),
+                hoursPerDay: ((Math.round((s.weight / totalWeight) * daysLeft) * dailyHours) / daysLeft).toFixed(1)
+            }))
+        });
+        
+        // Show results
+        document.getElementById('planDetails').innerHTML = planHTML;
+        document.getElementById('planResult').style.display = 'block';
+        
+        // Reload subjects to show updated hours
+        loadSubjects();
+    });
+
+    // ======================
+    // 5. LOAD EXISTING PLAN
+    // ======================
+    function loadCurrentPlan() {
+        db.collection('planner').doc('currentPlan').get()
+            .then((doc) => {
+                if (doc.exists) {
+                    const plan = doc.data();
+                    document.getElementById('examDate').value = plan.examDate;
+                    document.getElementById('dailyHours').value = plan.dailyStudyHours;
+                    
+                    // Show existing plan
+                    let planHTML = `
+                        <p><strong>Current Plan (${plan.generatedOn?.toDate().toLocaleDateString()}):</strong></p>
+                        <p>Exam: ${plan.examDate} | Daily: ${plan.dailyStudyHours} hrs | Days Left: ${plan.daysLeft}</p>
+                    `;
+                    document.getElementById('planDetails').innerHTML = planHTML;
+                    document.getElementById('planResult').style.display = 'block';
+                }
+            })
+            .catch((error) => {
+                console.log("No existing plan found or error:", error);
+            });
+    }
+
+    // ======================
+    // 6. INITIALIZE APP
+    // ======================
+    window.onload = function() {
+        loadSubjects();
+        loadCurrentPlan();
+        console.log("Revision Oasis app initialized!");
+    };
+</script>
+</body>
+</html>
